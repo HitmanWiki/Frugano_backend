@@ -36,24 +36,29 @@ console.log(`🚀 Running on ${isVercel ? 'Vercel' : 'Local'} environment`);
 const app = express();
 const httpServer = createServer(app);
 
-// Allowed origins for CORS
+// Allowed origins for CORS - ensure NO trailing slashes
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:3000',
   'https://frugano-frontend.vercel.app',
   'https://frugano-admin.vercel.app',
-  process.env.FRONTEND_URL
+  process.env.FRONTEND_URL ? process.env.FRONTEND_URL.replace(/\/$/, '') : null
 ].filter(Boolean);
 
-// CORS configuration
+console.log('🔓 CORS Allowed Origins:', allowedOrigins);
+
+// CORS configuration - MUST be first middleware
 app.use(cors({
   origin: function(origin, callback) {
     // Allow requests with no origin (like mobile apps, curl, etc)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
-      callback(null, true);
+    // Remove trailing slash from origin for comparison
+    const cleanOrigin = origin.replace(/\/$/, '');
+    
+    if (allowedOrigins.includes(cleanOrigin)) {
+      callback(null, origin);
     } else {
       console.log('❌ Blocked origin:', origin);
       callback(new Error('Not allowed by CORS'));
@@ -63,6 +68,30 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+// Handle preflight requests explicitly
+app.options('*', cors());
+
+// Security middleware
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", ...allowedOrigins]
+    }
+  }
+}));
+
+// Logging
+app.use(morgan('combined'));
+
+// Body parser
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Only initialize Socket.io in non-Vercel environments
 let io = null;
@@ -125,27 +154,6 @@ if (!isVercel) {
   console.log('🔌 WebSocket disabled on Vercel (use polling instead)');
 }
 
-// Security middleware
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-      imgSrc: ["'self'", "data:", "blob:"],
-      connectSrc: ["'self'", ...allowedOrigins]
-    }
-  }
-}));
-
-// Logging
-app.use(morgan('combined'));
-
-// Body parser
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
 // Static files - Handle uploads differently for Vercel
 const uploadsDir = isVercel ? '/tmp/uploads' : path.join(__dirname, '../uploads');
 const invoicesDir = path.join(uploadsDir, 'invoices');
@@ -182,22 +190,9 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', authenticate, userRoutes);
-app.use('/api/categories', authenticate, categoryRoutes);
-app.use('/api/products', authenticate, productRoutes);
-app.use('/api/sales', authenticate, saleRoutes);
-app.use('/api/purchases', authenticate, purchaseRoutes);
-app.use('/api/suppliers', authenticate, supplierRoutes);
-app.use('/api/inventory', authenticate, inventoryRoutes);
-app.use('/api/customers', authenticate, customerRoutes);
-app.use('/api/dashboard', authenticate, dashboardRoutes);
-app.use('/api/campaigns', authenticate, campaignRoutes);
-app.use('/api/reports', authenticate, reportRoutes);
-app.use('/api/hardware', authenticate, hardwareRoutes);
-
-// Health check (public)
+// ============================================
+// HEALTH CHECK ENDPOINTS (Public)
+// ============================================
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
@@ -211,17 +206,109 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Test endpoint
 app.get('/api/test', (req, res) => {
   res.json({ 
-    message: 'Backend is working!', 
+    message: 'API is working!', 
     timestamp: new Date().toISOString(),
     env: process.env.NODE_ENV,
     frontendUrl: process.env.FRONTEND_URL
   });
 });
 
-// API Documentation (public)
+app.get('/api/ping', (req, res) => {
+  res.json({ 
+    message: 'pong', 
+    time: new Date().toISOString() 
+  });
+});
+
+// Debug routes endpoint (temporary)
+app.get('/api/debug-routes', (req, res) => {
+  const routes = [];
+  
+  // Collect all registered routes
+  app._router.stack.forEach(middleware => {
+    if (middleware.route) {
+      // Routes registered directly
+      routes.push({
+        path: middleware.route.path,
+        methods: Object.keys(middleware.route.methods)
+      });
+    } else if (middleware.name === 'router' && middleware.handle.stack) {
+      // Routes from router middleware
+      middleware.handle.stack.forEach(handler => {
+        if (handler.route) {
+          const path = handler.route.path;
+          const methods = Object.keys(handler.route.methods);
+          routes.push({ path, methods });
+        }
+      });
+    }
+  });
+  
+  res.json({
+    message: 'Registered Routes',
+    count: routes.length,
+    routes: routes,
+    env: process.env.NODE_ENV,
+    hasAuthRoutes: routes.some(r => r.path.includes('auth') || r.path.includes('/login'))
+  });
+});
+
+// Database test endpoint
+app.get('/api/db-test', async (req, res) => {
+  try {
+    const { PrismaClient } = require('@prisma/client');
+    const prisma = new PrismaClient();
+    
+    // Try to query the database
+    const userCount = await prisma.user.count();
+    
+    await prisma.$disconnect();
+    
+    res.json({ 
+      success: true, 
+      message: 'Database connected',
+      userCount,
+      databaseUrl: process.env.DATABASE_URL ? 'Set (hidden)' : 'NOT SET'
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      code: error.code,
+      databaseUrl: process.env.DATABASE_URL ? 'Set (hidden)' : 'NOT SET'
+    });
+  }
+});
+
+// ============================================
+// API ROUTES - Mount all routes here
+// ============================================
+console.log('📦 Mounting API routes...');
+
+// Public routes (no authentication required)
+app.use('/api/auth', authRoutes);
+
+// Protected routes (authentication required)
+app.use('/api/users', authenticate, userRoutes);
+app.use('/api/categories', authenticate, categoryRoutes);
+app.use('/api/products', authenticate, productRoutes);
+app.use('/api/sales', authenticate, saleRoutes);
+app.use('/api/purchases', authenticate, purchaseRoutes);
+app.use('/api/suppliers', authenticate, supplierRoutes);
+app.use('/api/inventory', authenticate, inventoryRoutes);
+app.use('/api/customers', authenticate, customerRoutes);
+app.use('/api/dashboard', authenticate, dashboardRoutes);
+app.use('/api/campaigns', authenticate, campaignRoutes);
+app.use('/api/reports', authenticate, reportRoutes);
+app.use('/api/hardware', authenticate, hardwareRoutes);
+
+console.log('✅ API routes mounted');
+
+// ============================================
+// ROOT ENDPOINT (API Documentation)
+// ============================================
 app.get('/', (req, res) => {
   res.json({
     name: 'Frugano Retail Management API',
@@ -237,6 +324,9 @@ app.get('/', (req, res) => {
       public: {
         health: 'GET /health',
         test: 'GET /api/test',
+        ping: 'GET /api/ping',
+        debug: 'GET /api/debug-routes',
+        dbTest: 'GET /api/db-test',
         docs: 'GET /',
         setup: 'POST /api/auth/setup'
       },
@@ -341,7 +431,9 @@ app.get('/', (req, res) => {
   });
 });
 
-// 404 handler
+// ============================================
+// 404 HANDLER - Must be last!
+// ============================================
 app.use((req, res) => {
   res.status(404).json({ 
     error: 'Route not found',
@@ -355,7 +447,9 @@ app.use((req, res) => {
 // Error handler
 app.use(errorHandler);
 
-// For local development
+// ============================================
+// SERVER STARTUP (Local only)
+// ============================================
 if (!isVercel) {
   const PORT = process.env.PORT || 5000;
   httpServer.listen(PORT, () => {
