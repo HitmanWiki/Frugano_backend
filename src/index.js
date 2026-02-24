@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -37,58 +36,91 @@ console.log(`🚀 Running on ${isVercel ? 'Vercel' : 'Local'} environment`);
 const app = express();
 const httpServer = createServer(app);
 
+// Allowed origins for CORS
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000',
+  'https://frugano-frontend.vercel.app',
+  'https://frugano-admin.vercel.app',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+// CORS configuration
+app.use(cors({
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
+      callback(null, true);
+    } else {
+      console.log('❌ Blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+
 // Only initialize Socket.io in non-Vercel environments
 let io = null;
 if (!isVercel) {
-  const { Server } = require('socket.io');
-  io = new Server(httpServer, {
-    cors: {
-      origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-      credentials: true,
-      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
-    }
-  });
+  try {
+    const { Server } = require('socket.io');
+    io = new Server(httpServer, {
+      cors: {
+        origin: allowedOrigins,
+        credentials: true,
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
+      },
+      transports: ['websocket', 'polling']
+    });
 
-  // Make io accessible to routes
-  app.set('io', io);
+    // Make io accessible to routes
+    app.set('io', io);
 
-  // WebSocket connection handling
-  io.on('connection', (socket) => {
-    console.log('🔌 New client connected:', socket.id);
-    
-    socket.on('join-store', (storeId) => {
-      socket.join(`store-${storeId}`);
-      console.log(`Client ${socket.id} joined store ${storeId}`);
-    });
-    
-    socket.on('new-sale', (data) => {
-      io.to(`store-${data.storeId}`).emit('sale-updated', {
-        type: 'NEW_SALE',
-        data: data,
-        timestamp: new Date()
+    // WebSocket connection handling
+    io.on('connection', (socket) => {
+      console.log('🔌 New client connected:', socket.id);
+      
+      socket.on('join-store', (storeId) => {
+        socket.join(`store-${storeId}`);
+        console.log(`Client ${socket.id} joined store ${storeId}`);
+      });
+      
+      socket.on('new-sale', (data) => {
+        io.to(`store-${data.storeId}`).emit('sale-updated', {
+          type: 'NEW_SALE',
+          data: data,
+          timestamp: new Date()
+        });
+      });
+      
+      socket.on('stock-update', (data) => {
+        io.to(`store-${data.storeId}`).emit('inventory-updated', {
+          type: 'STOCK_UPDATE',
+          data: data,
+          timestamp: new Date()
+        });
+      });
+      
+      socket.on('low-stock-alert', (data) => {
+        io.to(`store-${data.storeId}`).emit('alert', {
+          type: 'LOW_STOCK',
+          data: data,
+          timestamp: new Date()
+        });
+      });
+      
+      socket.on('disconnect', () => {
+        console.log('🔌 Client disconnected:', socket.id);
       });
     });
-    
-    socket.on('stock-update', (data) => {
-      io.to(`store-${data.storeId}`).emit('inventory-updated', {
-        type: 'STOCK_UPDATE',
-        data: data,
-        timestamp: new Date()
-      });
-    });
-    
-    socket.on('low-stock-alert', (data) => {
-      io.to(`store-${data.storeId}`).emit('alert', {
-        type: 'LOW_STOCK',
-        data: data,
-        timestamp: new Date()
-      });
-    });
-    
-    socket.on('disconnect', () => {
-      console.log('🔌 Client disconnected:', socket.id);
-    });
-  });
+  } catch (error) {
+    console.log('⚠️ Socket.io initialization failed:', error.message);
+  }
 } else {
   console.log('🔌 WebSocket disabled on Vercel (use polling instead)');
 }
@@ -102,24 +134,16 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
       imgSrc: ["'self'", "data:", "blob:"],
-      connectSrc: ["'self'", process.env.FRONTEND_URL || 'http://localhost:5173']
+      connectSrc: ["'self'", ...allowedOrigins]
     }
   }
-}));
-
-// CORS configuration
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 // Logging
 app.use(morgan('combined'));
 
 // Body parser
-app.use(express.json({ limit: '10mb' })); // Reduced limit for Vercel
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Static files - Handle uploads differently for Vercel
@@ -128,7 +152,7 @@ const invoicesDir = path.join(uploadsDir, 'invoices');
 const barcodesDir = path.join(uploadsDir, 'barcodes');
 const productsDir = path.join(uploadsDir, 'products');
 
-// Create directories if they don't exist (only attempt in non-Vercel or if /tmp is writable)
+// Create directories if they don't exist
 try {
   [uploadsDir, invoicesDir, barcodesDir, productsDir].forEach(dir => {
     if (!fs.existsSync(dir)) {
@@ -138,7 +162,6 @@ try {
   });
 } catch (error) {
   console.log(`⚠️ Cannot create directories: ${error.message}`);
-  console.log('📁 File uploads will need cloud storage in production');
 }
 
 // Only serve static files if directory exists and we're not on Vercel
@@ -181,10 +204,20 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     database: 'connected',
-    websocket: !isVercel ? 'active' : 'disabled (serverless)',
+    websocket: !isVercel && io ? 'active' : 'disabled (serverless)',
     environment: process.env.NODE_ENV || 'production',
     version: '1.0.0',
     vercel: isVercel
+  });
+});
+
+// Test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    message: 'Backend is working!', 
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV,
+    frontendUrl: process.env.FRONTEND_URL
   });
 });
 
@@ -197,9 +230,13 @@ app.get('/', (req, res) => {
     environment: process.env.NODE_ENV || 'production',
     vercel: isVercel,
     timestamp: new Date().toISOString(),
+    cors: allowedOrigins,
+    documentation: 'https://github.com/your-repo/frugano-backend',
+    support: 'support@frugano.com',
     endpoints: {
       public: {
         health: 'GET /health',
+        test: 'GET /api/test',
         docs: 'GET /',
         setup: 'POST /api/auth/setup'
       },
@@ -208,7 +245,6 @@ app.get('/', (req, res) => {
         me: 'GET /api/auth/me (Auth)',
         logout: 'POST /api/auth/logout (Auth)',
         changePassword: 'POST /api/auth/change-password (Auth)'
-      
       },
       users: {
         list: 'GET /api/users (Owner, Manager)',
@@ -305,6 +341,7 @@ app.get('/', (req, res) => {
   });
 });
 
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({ 
     error: 'Route not found',
@@ -327,9 +364,10 @@ if (!isVercel) {
     console.log('='.repeat(70));
     console.log(`📍 Server:     http://localhost:${PORT}`);
     console.log(`📊 Database:   Neon PostgreSQL`);
-    console.log(`🔌 WebSocket:  Active on same port`);
+    console.log(`🔌 WebSocket:  ${io ? 'Active' : 'Disabled'}`);
     console.log(`📁 Uploads:    ${uploadsDir}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔓 CORS:       ${allowedOrigins.join(', ')}`);
     console.log('='.repeat(70) + '\n');
   });
 }
