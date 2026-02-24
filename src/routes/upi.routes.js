@@ -6,12 +6,37 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 
+// ✅ NEW: Generate QR code for custom amount (used by POS Quick UPI)
+router.post('/generate-amount', async (req, res) => {
+  try {
+    const { amount, orderId, customerName } = req.body;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Valid amount required' });
+    }
+
+    // Use upiService to generate QR code
+    const qrData = await upiService.generateQRCode(
+      amount,
+      orderId || `ORDER${Date.now()}`,
+      customerName
+    );
+
+    res.json({
+      success: true,
+      data: qrData
+    });
+  } catch (error) {
+    console.error('QR generation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Generate QR code for order/sale
 router.get('/qr/:saleId', authenticate, async (req, res) => {
   try {
     const { saleId } = req.params;
 
-    // Get sale details
     const sale = await prisma.sale.findUnique({
       where: { id: saleId },
       include: {
@@ -96,11 +121,9 @@ router.get('/qr-printer/:saleId', authenticate, async (req, res) => {
 // Payment callback/webhook
 router.post('/callback', express.raw({type: 'application/json'}), async (req, res) => {
   try {
-    // Verify webhook signature (implement based on your payment gateway)
     const paymentData = upiService.parsePaymentResponse(req.body);
     
     if (paymentData.success) {
-      // Update order status
       await prisma.sale.update({
         where: { invoiceNo: paymentData.orderId },
         data: {
