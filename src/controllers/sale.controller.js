@@ -1,7 +1,7 @@
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../lib/prisma');
 const { validationResult } = require('express-validator');
 
-const prisma = new PrismaClient();
+
 
 // @desc    Create new sale (POS)
 // @route   POST /api/sales

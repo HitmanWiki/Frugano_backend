@@ -1,8 +1,8 @@
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../lib/prisma');
 const bcrypt = require('bcryptjs');
 const { validationResult } = require('express-validator');
 
-const prisma = new PrismaClient();
+
 
 // @desc    Get all users
 // @route   GET /api/users

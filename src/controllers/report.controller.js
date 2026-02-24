@@ -1,8 +1,8 @@
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../lib/prisma');
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 
-const prisma = new PrismaClient();
+
 
 // @desc    Get sales report
 // @route   GET /api/reports/sales
