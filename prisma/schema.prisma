@@ -1,0 +1,910 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Users & Authentication
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  password      String
+  name          String
+  phone         String?
+  role          UserRole       @default(CASHIER)
+  isActive      Boolean        @default(true)
+  lastLogin     DateTime?
+  avatar        String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  
+  // Relations
+  sales         Sale[]
+  purchases     Purchase[]
+  activities    ActivityLog[]
+  deliveryTasks DeliveryAssignment[]
+  stockAlerts   StockAlert[]    @relation("StockAlertResolver")
+  wastage       Wastage[]       @relation("WastageReporter")
+  supplierPayments SupplierPayment[] @relation("PaymentCreator")
+  inventoryTransactions InventoryTransaction[] @relation("TransactionCreator")
+  feedbackResponses CustomerFeedback[] @relation("FeedbackResponder")
+  campaigns      Campaign[]      @relation("CampaignCreator")
+  hardwareConfigs HardwareConfig[] @relation("HardwareConfigurator")
+}
+
+enum UserRole {
+  OWNER
+  MANAGER
+  CASHIER
+  INVENTORY_STAFF
+  DELIVERY_BOY
+}
+
+// Hardware Configuration (Thermal Printer & Weighing Machine)
+model HardwareConfig {
+  id              String           @id @default(cuid())
+  storeId         String?          // For multi-store future
+  deviceType      DeviceType
+  deviceName      String
+  deviceModel     String?
+  connectionType  ConnectionType   @default(USB)
+  ipAddress       String?          // For network printers
+  port            Int?             // For network printers
+  usbVendorId     String?          // For USB devices
+  usbProductId    String?          // For USB devices
+  comPort         String?          // For serial connections (weighing machine)
+  baudRate        Int?             @default(9600) // For serial connections
+  isDefault       Boolean          @default(false)
+  settings        Json?            // Additional device-specific settings (paper size, print speed, etc.)
+  isActive        Boolean          @default(true)
+  createdById     String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  createdBy       User             @relation(fields: [createdById], references: [id], name: "HardwareConfigurator")
+  printJobs       PrintJob[]
+  
+  @@unique([storeId, deviceType, deviceName])
+}
+
+enum DeviceType {
+  THERMAL_PRINTER
+  WEIGHING_MACHINE
+  BARCODE_SCANNER
+  CASH_DRAWER
+}
+
+enum ConnectionType {
+  USB
+  SERIAL
+  NETWORK
+  BLUETOOTH
+}
+
+// Print Jobs
+model PrintJob {
+  id              String           @id @default(cuid())
+  hardwareConfigId String
+  jobType         PrintJobType
+  document        String           // Base64 encoded document or print data
+  copies          Int              @default(1)
+  status          PrintStatus      @default(PENDING)
+  error           String?
+  printedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  hardwareConfig  HardwareConfig   @relation(fields: [hardwareConfigId], references: [id])
+  sale            Sale?            @relation(fields: [saleId], references: [id])
+  saleId          String?
+}
+
+enum PrintJobType {
+  BILL_RECEIPT
+  INVOICE
+  LABEL
+  REPORT
+  TEST_PAGE
+}
+
+enum PrintStatus {
+  PENDING
+  PRINTING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// Weight Measurements (from Weighing Machine)
+model WeightMeasurement {
+  id              String           @id @default(cuid())
+  productId       String?
+  weight          Float            // Weight in grams/kg
+  barcode         String?          // Generated barcode for weighted item
+  tareWeight      Float?           // Container weight if any
+  netWeight       Float
+  price           Float?           // Calculated price based on weight
+  measuredAt      DateTime         @default(now())
+  measuredBy      String?          // Cashier ID
+  saleId          String?          // If directly added to sale
+  
+  // Relations
+  product         Product?         @relation(fields: [productId], references: [id])
+  sale            Sale?            @relation(fields: [saleId], references: [id])
+  
+  @@index([measuredAt])
+}
+
+// Delivery Management
+model DeliveryAssignment {
+  id              String           @id @default(cuid())
+  orderId         String           @unique
+  deliveryBoyId   String
+  assignedAt      DateTime         @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  status          DeliveryStatus   @default(ASSIGNED)
+  notes           String?
+  deliveryFee     Float            @default(0)
+  customerRating  Int?             @db.SmallInt
+  customerFeedback String?
+  
+  // Relations
+  deliveryBoy     User             @relation(fields: [deliveryBoyId], references: [id])
+  order           Order            @relation(fields: [orderId], references: [id])
+  
+  @@index([deliveryBoyId])
+  @@index([status])
+}
+
+enum DeliveryStatus {
+  ASSIGNED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+  RETURNED
+}
+
+// Customer (Registered Users)
+model Customer {
+  id              String           @id @default(cuid())
+  phone           String           @unique
+  email           String?          @unique
+  name            String
+  password        String?          // For app login
+  isVerified      Boolean          @default(false)
+  totalOrders     Int              @default(0)
+  totalSpent      Float            @default(0)
+  loyaltyPoints   Int              @default(0)
+  walletBalance   Float            @default(0)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  addresses       CustomerAddress[]
+  orders          Order[]
+  walletTransactions WalletTransaction[]
+  feedback        CustomerFeedback[]
+  cart            Cart?            // One-to-one relation
+  posSales        Sale[]           // Sales made to this customer in POS
+  couponUsages    CouponUsage[]
+  campaigns       CampaignCustomer[]
+}
+
+model CustomerAddress {
+  id              String           @id @default(cuid())
+  customerId      String
+  type            AddressType      @default(HOME)
+  addressLine1    String
+  addressLine2    String?
+  landmark        String?
+  city            String
+  state           String
+  pincode         String
+  latitude        Float?
+  longitude       Float?
+  isDefault       Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  orders          Order[]
+  
+  @@index([customerId])
+}
+
+enum AddressType {
+  HOME
+  OFFICE
+  OTHER
+}
+
+// Orders (Online Orders)
+model Order {
+  id              String           @id @default(cuid())
+  orderNumber     String           @unique
+  customerId      String
+  addressId       String?
+  orderDate       DateTime         @default(now())
+  deliveryDate    DateTime?
+  deliverySlot    String?          // "9AM-11AM", "5PM-7PM", etc.
+  subtotal        Float            @default(0)
+  deliveryFee     Float            @default(0)
+  discount        Float            @default(0)
+  taxAmount       Float            @default(0)
+  totalAmount     Float            @default(0)
+  paymentStatus   PaymentStatus    @default(PENDING)
+  paymentMethod   PaymentMethod?
+  orderStatus     OrderStatus      @default(PENDING)
+  notes           String?
+  cancellationReason String?
+  appliedCouponId String?          // Coupon used for this order
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  address         CustomerAddress? @relation(fields: [addressId], references: [id])
+  items           OrderItem[]
+  payment         OrderPayment?
+  delivery        DeliveryAssignment?
+  tracking        OrderTracking[]
+  feedback        CustomerFeedback[]
+  couponUsage     CouponUsage[]
+  
+  @@index([customerId])
+  @@index([orderStatus])
+  @@index([orderDate])
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  PACKED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  RETURNED
+  REFUNDED
+}
+
+model OrderItem {
+  id              String           @id @default(cuid())
+  orderId         String
+  productId       String
+  quantity        Float
+  unitPrice       Float            // Price at time of order
+  discount        Float            @default(0)
+  taxAmount       Float            @default(0)
+  total           Float
+  isCancelled     Boolean          @default(false)
+  
+  // Relations
+  order           Order            @relation(fields: [orderId], references: [id])
+  product         Product          @relation(fields: [productId], references: [id])
+  
+  @@unique([orderId, productId])
+}
+
+model OrderPayment {
+  id              String           @id @default(cuid())
+  orderId         String           @unique
+  amount          Float
+  paymentMethod   PaymentMethod
+  transactionId   String?          // Razorpay/Stripe transaction ID
+  status          PaymentStatus    @default(PENDING)
+  paidAt          DateTime?
+  refundAmount    Float            @default(0)
+  refundReason    String?
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  order           Order            @relation(fields: [orderId], references: [id])
+}
+
+model OrderTracking {
+  id              String           @id @default(cuid())
+  orderId         String
+  status          OrderStatus
+  location        String?          // Current location if available
+  notes           String?
+  updatedBy       String?          // User ID if updated by staff
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  order           Order            @relation(fields: [orderId], references: [id])
+  
+  @@index([orderId])
+  @@index([createdAt])
+}
+
+// Categories
+model Category {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  description String?
+  image       String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  products    Product[]
+  campaigns   CampaignCategory[]
+}
+
+// Products
+model Product {
+  id               String           @id @default(cuid())
+  name             String
+  description      String?
+  sku              String           @unique
+  barcode          String?          @unique
+  categoryId       String
+  purchasePrice    Float            @default(0)
+  sellingPrice     Float            @default(0)
+  mrp              Float?           // Maximum Retail Price
+  unit             UnitType         @default(KG)
+  taxRate          Float            @default(0) // GST %
+  minStockAlert    Float            @default(10)
+  currentStock     Float            @default(0)
+  image            String?
+  images           String[]         // Multiple images
+  isOrganic        Boolean          @default(false)
+  isSeasonal       Boolean          @default(false)
+  season           String?          // e.g., "Summer", "Winter"
+  expiryDays       Int?             // Shelf life in days
+  nutritionalInfo  Json?            // Store as JSON
+  isActive         Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  
+  // Relations
+  category         Category         @relation(fields: [categoryId], references: [id])
+  saleItems        SaleItem[]
+  purchaseItems    PurchaseItem[]
+  inventoryItems   InventoryTransaction[]
+  stockAlerts      StockAlert[]
+  wastage          Wastage[]
+  orderItems       OrderItem[]
+  cartItems        CartItem[]
+  weightMeasurements WeightMeasurement[]
+  campaigns        CampaignProduct[]
+  
+  @@index([categoryId])
+  @@index([sku])
+  @@index([isActive])
+}
+
+enum UnitType {
+  KG
+  GRAM
+  PIECE
+  DOZEN
+  BUNDLE
+  PACKET
+}
+
+// Shopping Cart
+model Cart {
+  id              String           @id @default(cuid())
+  customerId      String           @unique
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  items           CartItem[]
+}
+
+model CartItem {
+  id              String           @id @default(cuid())
+  cartId          String
+  productId       String
+  quantity        Float
+  addedAt         DateTime         @default(now())
+  
+  // Relations
+  cart            Cart             @relation(fields: [cartId], references: [id])
+  product         Product          @relation(fields: [productId], references: [id])
+  
+  @@unique([cartId, productId])
+}
+
+// Suppliers
+model Supplier {
+  id              String           @id @default(cuid())
+  name            String
+  phone           String
+  email           String?
+  address         String?
+  gstNumber       String?          @unique
+  paymentTerms    String?          // e.g., "7 days", "30 days"
+  openingBalance  Float            @default(0)
+  currentBalance  Float            @default(0)
+  isActive        Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  purchases       Purchase[]
+  payments        SupplierPayment[]
+}
+
+// Purchases
+model Purchase {
+  id              String           @id @default(cuid())
+  invoiceNo       String           @unique
+  supplierId      String
+  purchaseDate    DateTime         @default(now())
+  totalAmount     Float            @default(0)
+  discount        Float            @default(0)
+  taxAmount       Float            @default(0)
+  netAmount       Float            @default(0)
+  paymentStatus   PaymentStatus    @default(PENDING)
+  paymentMethod   PaymentMethod?
+  notes           String?
+  createdById     String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  supplier        Supplier         @relation(fields: [supplierId], references: [id])
+  items           PurchaseItem[]
+  createdBy       User             @relation(fields: [createdById], references: [id])
+  payments        SupplierPayment[]
+}
+
+model PurchaseItem {
+  id              String           @id @default(cuid())
+  purchaseId      String
+  productId       String
+  quantity        Float
+  purchasePrice   Float            // Price at time of purchase
+  sellingPrice    Float?           // Suggested selling price
+  total           Float
+  expiryDate      DateTime?        // For perishable items
+  
+  // Relations
+  purchase        Purchase         @relation(fields: [purchaseId], references: [id])
+  product         Product          @relation(fields: [productId], references: [id])
+  
+  @@unique([purchaseId, productId])
+}
+
+// Supplier Payments
+model SupplierPayment {
+  id              String           @id @default(cuid())
+  supplierId      String
+  purchaseId      String?          // Optional - for purchase-specific payment
+  amount          Float
+  paymentDate     DateTime         @default(now())
+  paymentMethod   PaymentMethod
+  referenceNo     String?          // Cheque/Transaction number
+  notes           String?
+  createdById     String
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  supplier        Supplier         @relation(fields: [supplierId], references: [id])
+  purchase        Purchase?        @relation(fields: [purchaseId], references: [id])
+  createdBy       User             @relation(fields: [createdById], references: [id], name: "PaymentCreator")
+}
+
+// Sales (POS)
+model Sale {
+  id              String           @id @default(cuid())
+  invoiceNo       String           @unique
+  customerName    String?          // For non-registered customers
+  customerPhone   String?
+  customerId      String?          // For registered customers
+  saleDate        DateTime         @default(now())
+  subtotal        Float            @default(0)
+  discount        Float            @default(0)
+  taxAmount       Float            @default(0)
+  totalAmount     Float            @default(0)
+  paymentStatus   PaymentStatus    @default(PAID)
+  paymentMethod   PaymentMethod
+  notes           String?
+  cashierId       String
+  appliedCouponId String?          // Coupon used for this sale
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  cashier         User             @relation(fields: [cashierId], references: [id])
+  customer        Customer?        @relation(fields: [customerId], references: [id])
+  items           SaleItem[]
+  payments        SalePayment[]
+  printJobs       PrintJob[]
+  weightMeasurements WeightMeasurement[]
+  couponUsage     CouponUsage[]
+}
+
+model SaleItem {
+  id              String           @id @default(cuid())
+  saleId          String
+  productId       String
+  quantity        Float
+  sellingPrice    Float            // Price at time of sale
+  discount        Float            @default(0)
+  taxAmount       Float            @default(0)
+  total           Float
+  weightMeasured  Boolean          @default(false) // If sold by weight
+  weightId        String?          // Reference to weight measurement
+  
+  // Relations
+  sale            Sale             @relation(fields: [saleId], references: [id])
+  product         Product          @relation(fields: [productId], references: [id])
+  
+  @@unique([saleId, productId])
+}
+
+model SalePayment {
+  id              String           @id @default(cuid())
+  saleId          String
+  amount          Float
+  paymentMethod   PaymentMethod
+  referenceNo     String?          // UPI transaction ID, card last 4 digits
+  notes           String?
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  sale            Sale             @relation(fields: [saleId], references: [id])
+}
+
+// Wallet & Loyalty
+model WalletTransaction {
+  id              String           @id @default(cuid())
+  customerId      String
+  type            WalletTransactionType
+  amount          Float
+  balance         Float            // Balance after transaction
+  reference       String?          // Order ID, etc.
+  description     String?
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  customer        Customer         @relation(fields: [customerId], references: [id])
+}
+
+enum WalletTransactionType {
+  CREDIT
+  DEBIT
+  CASHBACK
+  REFERRAL_BONUS
+  REDEMPTION
+}
+
+// Inventory Management
+model InventoryTransaction {
+  id              String           @id @default(cuid())
+  productId       String
+  type            TransactionType
+  quantity        Float            // Positive for addition, negative for removal
+  beforeStock     Float
+  afterStock      Float
+  reference       String?          // Purchase ID, Sale ID, etc.
+  notes           String?
+  createdById     String
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  product         Product          @relation(fields: [productId], references: [id])
+  createdBy       User             @relation(fields: [createdById], references: [id], name: "TransactionCreator")
+  
+  @@index([productId])
+  @@index([createdAt])
+}
+
+enum TransactionType {
+  PURCHASE       // Stock added via purchase
+  SALE           // Stock removed via sale
+  ADJUSTMENT     // Manual stock adjustment
+  WASTAGE        // Spoiled/damaged goods
+  RETURN         // Customer return
+  TRANSFER       // Transfer to another store
+}
+
+// Wastage Tracking
+model Wastage {
+  id              String           @id @default(cuid())
+  productId       String
+  quantity        Float
+  reason          WastageReason
+  costPrice       Float            // Price at time of wastage
+  totalLoss       Float
+  notes           String?
+  reportedById    String
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  product         Product          @relation(fields: [productId], references: [id])
+  reportedBy      User             @relation(fields: [reportedById], references: [id], name: "WastageReporter")
+  
+  @@index([productId])
+  @@index([createdAt])
+}
+
+enum WastageReason {
+  SPOILED
+  DAMAGED
+  EXPIRED
+  OTHER
+}
+
+// Stock Alerts
+model StockAlert {
+  id              String           @id @default(cuid())
+  productId       String
+  currentStock    Float
+  minStockLevel   Float
+  status          AlertStatus      @default(ACTIVE)
+  resolvedAt      DateTime?
+  resolvedById    String?
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  product         Product          @relation(fields: [productId], references: [id])
+  resolvedBy      User?            @relation(fields: [resolvedById], references: [id], name: "StockAlertResolver")
+  
+  @@index([status])
+}
+
+enum AlertStatus {
+  ACTIVE
+  RESOLVED
+  IGNORED
+}
+
+// Customer Feedback
+model CustomerFeedback {
+  id              String           @id @default(cuid())
+  customerId      String
+  orderId         String?          // Feedback for specific order
+  rating          Int              @db.SmallInt  // 1-5
+  comment         String?
+  category        FeedbackCategory?
+  response        String?          // Staff response
+  respondedById   String?
+  respondedAt     DateTime?
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  order           Order?           @relation(fields: [orderId], references: [id])
+  respondedBy     User?            @relation(fields: [respondedById], references: [id], name: "FeedbackResponder")
+}
+
+enum FeedbackCategory {
+  PRODUCT_QUALITY
+  DELIVERY
+  PACKAGING
+  PRICE
+  SERVICE
+  OTHER
+}
+
+// CAMPAIGNS & OFFERS MODULE
+model Campaign {
+  id              String           @id @default(cuid())
+  name            String
+  description     String?
+  type            CampaignType
+  startDate       DateTime
+  endDate         DateTime
+  isActive        Boolean          @default(true)
+  
+  // Discount Configuration
+  discountType    DiscountType
+  discountValue   Float            // Percentage or fixed amount
+  maxDiscount     Float?           // Maximum discount amount (for percentage)
+  minOrderValue   Float?           @default(0)
+  
+  // Targeting
+  targetType      TargetType       @default(ALL_CUSTOMERS)
+  customerSegments String[]        // VIP, NEW, REGULAR, etc.
+  
+  // Usage Limits
+  usageLimit      Int?             // Total times campaign can be used
+  perUserLimit    Int?             @default(1)
+  usedCount       Int              @default(0)
+  
+  // Visibility
+  showOnHomepage  Boolean          @default(false)
+  bannerImage     String?
+  priority        Int              @default(0) // Higher priority = shown first
+  
+  // Metadata
+  createdById     String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  createdBy       User             @relation(fields: [createdById], references: [id], name: "CampaignCreator")
+  categories      CampaignCategory[]
+  products        CampaignProduct[]
+  customers       CampaignCustomer[]
+  coupons         Coupon[]
+  
+  @@index([startDate, endDate])
+  @@index([isActive])
+}
+
+enum CampaignType {
+  FLASH_SALE       // Short duration, high discount
+  SEASONAL_OFFER   // Seasonal fruits/vegetables
+  FESTIVAL_OFFER   // Festival specials
+  BUNDLE_OFFER     // Buy X get Y
+  FIRST_ORDER      // First order discount
+  REFERRAL         // Referral bonus
+  LOYALTY_REWARD   // Loyalty points multiplier
+  WEEKEND_SPECIAL  // Weekend only offers
+  CLEARANCE_SALE   // Clearance/expiry soon
+}
+
+enum TargetType {
+  ALL_CUSTOMERS
+  SPECIFIC_CUSTOMERS
+  NEW_CUSTOMERS
+  EXISTING_CUSTOMERS
+  VIP_CUSTOMERS
+  LOCATION_BASED
+}
+
+// Campaign Categories
+model CampaignCategory {
+  id              String           @id @default(cuid())
+  campaignId      String
+  categoryId      String
+  
+  // Relations
+  campaign        Campaign         @relation(fields: [campaignId], references: [id])
+  category        Category         @relation(fields: [categoryId], references: [id])
+  
+  @@unique([campaignId, categoryId])
+}
+
+// Campaign Products
+model CampaignProduct {
+  id              String           @id @default(cuid())
+  campaignId      String
+  productId       String
+  specialPrice    Float?           // Override product price for this campaign
+  
+  // Relations
+  campaign        Campaign         @relation(fields: [campaignId], references: [id])
+  product         Product          @relation(fields: [productId], references: [id])
+  
+  @@unique([campaignId, productId])
+}
+
+// Campaign Customers (for targeted campaigns)
+model CampaignCustomer {
+  id              String           @id @default(cuid())
+  campaignId      String
+  customerId      String
+  isEligible      Boolean          @default(true)
+  timesUsed       Int              @default(0)
+  
+  // Relations
+  campaign        Campaign         @relation(fields: [campaignId], references: [id])
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  
+  @@unique([campaignId, customerId])
+}
+
+// Promotions & Coupons
+model Coupon {
+  id              String           @id @default(cuid())
+  code            String           @unique
+  description     String?
+  campaignId      String?          // Optional - if part of a campaign
+  
+  // Discount Configuration
+  discountType    DiscountType
+  discountValue   Float
+  minOrderValue   Float?           @default(0)
+  maxDiscount     Float?           // For percentage discounts
+  
+  // Validity
+  startDate       DateTime
+  endDate         DateTime
+  isActive        Boolean          @default(true)
+  
+  // Usage Limits
+  usageLimit      Int?             // Total times coupon can be used
+  perUserLimit    Int?             @default(1)
+  usedCount       Int              @default(0)
+  
+  // Applicability
+  applicableCategories String[]    // Category IDs
+  applicableProducts String[]      // Product IDs
+  firstTimeOnly   Boolean          @default(false) // Only for first order
+  
+  // Metadata
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  // Relations
+  campaign        Campaign?        @relation(fields: [campaignId], references: [id])
+  usage           CouponUsage[]
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  BUY_X_GET_Y
+  FREE_SHIPPING
+  BOGO             // Buy One Get One
+}
+
+// Coupon Usage
+model CouponUsage {
+  id              String           @id @default(cuid())
+  couponId        String
+  customerId      String?
+  orderId         String?
+  saleId          String?
+  discountAmount  Float
+  usedAt          DateTime         @default(now())
+  
+  // Relations
+  coupon          Coupon           @relation(fields: [couponId], references: [id])
+  customer        Customer?        @relation(fields: [customerId], references: [id])
+  order           Order?           @relation(fields: [orderId], references: [id])
+  sale            Sale?            @relation(fields: [saleId], references: [id])
+  
+  // Conditional unique constraints - we need separate indexes instead
+  @@unique(name: "unique_coupon_order", fields: [couponId, orderId])
+  @@unique(name: "unique_coupon_sale", fields: [couponId, saleId])
+  @@index([customerId])
+  @@index([usedAt])
+}
+
+// Activity Log (Audit Trail)
+model ActivityLog {
+  id              String           @id @default(cuid())
+  userId          String
+  action          String           // e.g., "CREATE_SALE", "UPDATE_PRODUCT"
+  entity          String           // e.g., "Sale", "Product"
+  entityId        String?
+  details         Json?            // Store changes as JSON
+  ipAddress       String?
+  userAgent       String?
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  user            User             @relation(fields: [userId], references: [id])
+  
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+// Enums
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIAL
+  CANCELLED
+  REFUNDED
+  FAILED
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  CARD
+  ONLINE
+  WALLET
+  CREDIT
+  SPLIT
+}
