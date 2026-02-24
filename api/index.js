@@ -107,7 +107,7 @@ app.use('/api/dashboard', authenticate, dashboardRoutes);
 app.use('/api/campaigns', authenticate, campaignRoutes);
 app.use('/api/reports', authenticate, reportRoutes);
 app.use('/api/hardware', authenticate, hardwareRoutes);
-app.use('/api/upi', authenticate, upiRoutes); // ✅ NEW: UPI Routes (protected)
+app.use('/api/upi',  upiRoutes); // ✅ NEW: UPI Routes (protected)
 
 console.log('✅ API routes mounted');
 
