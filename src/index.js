@@ -1,12 +1,11 @@
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 const path = require('path');
 const { createServer } = require('http');
-const { Server } = require('socket.io');
 const fs = require('fs');
 
 // Load env variables
@@ -30,58 +29,69 @@ const hardwareRoutes = require('./routes/hardware.routes');
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
 const { authenticate } = require('./middleware/auth');
-const { apiLimiter, authLimiter, posLimiter, exportLimiter } = require('./middleware/rateLimiter');
+
+// Detect if running on Vercel
+const isVercel = process.env.VERCEL === '1';
+console.log(`🚀 Running on ${isVercel ? 'Vercel' : 'Local'} environment`);
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, {
-  cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
-  }
-});
 
-// Make io accessible to routes
-app.set('io', io);
+// Only initialize Socket.io in non-Vercel environments
+let io = null;
+if (!isVercel) {
+  const { Server } = require('socket.io');
+  io = new Server(httpServer, {
+    cors: {
+      origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
+    }
+  });
 
-// WebSocket connection handling
-io.on('connection', (socket) => {
-  console.log('🔌 New client connected:', socket.id);
-  
-  socket.on('join-store', (storeId) => {
-    socket.join(`store-${storeId}`);
-    console.log(`Client ${socket.id} joined store ${storeId}`);
-  });
-  
-  socket.on('new-sale', (data) => {
-    io.to(`store-${data.storeId}`).emit('sale-updated', {
-      type: 'NEW_SALE',
-      data: data,
-      timestamp: new Date()
+  // Make io accessible to routes
+  app.set('io', io);
+
+  // WebSocket connection handling
+  io.on('connection', (socket) => {
+    console.log('🔌 New client connected:', socket.id);
+    
+    socket.on('join-store', (storeId) => {
+      socket.join(`store-${storeId}`);
+      console.log(`Client ${socket.id} joined store ${storeId}`);
+    });
+    
+    socket.on('new-sale', (data) => {
+      io.to(`store-${data.storeId}`).emit('sale-updated', {
+        type: 'NEW_SALE',
+        data: data,
+        timestamp: new Date()
+      });
+    });
+    
+    socket.on('stock-update', (data) => {
+      io.to(`store-${data.storeId}`).emit('inventory-updated', {
+        type: 'STOCK_UPDATE',
+        data: data,
+        timestamp: new Date()
+      });
+    });
+    
+    socket.on('low-stock-alert', (data) => {
+      io.to(`store-${data.storeId}`).emit('alert', {
+        type: 'LOW_STOCK',
+        data: data,
+        timestamp: new Date()
+      });
+    });
+    
+    socket.on('disconnect', () => {
+      console.log('🔌 Client disconnected:', socket.id);
     });
   });
-  
-  socket.on('stock-update', (data) => {
-    io.to(`store-${data.storeId}`).emit('inventory-updated', {
-      type: 'STOCK_UPDATE',
-      data: data,
-      timestamp: new Date()
-    });
-  });
-  
-  socket.on('low-stock-alert', (data) => {
-    io.to(`store-${data.storeId}`).emit('alert', {
-      type: 'LOW_STOCK',
-      data: data,
-      timestamp: new Date()
-    });
-  });
-  
-  socket.on('disconnect', () => {
-    console.log('🔌 Client disconnected:', socket.id);
-  });
-});
+} else {
+  console.log('🔌 WebSocket disabled on Vercel (use polling instead)');
+}
 
 // Security middleware
 app.use(helmet({
@@ -109,24 +119,37 @@ app.use(cors({
 app.use(morgan('combined'));
 
 // Body parser
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '10mb' })); // Reduced limit for Vercel
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Static files
-const uploadsDir = path.join(__dirname, '../uploads');
+// Static files - Handle uploads differently for Vercel
+const uploadsDir = isVercel ? '/tmp/uploads' : path.join(__dirname, '../uploads');
 const invoicesDir = path.join(uploadsDir, 'invoices');
 const barcodesDir = path.join(uploadsDir, 'barcodes');
 const productsDir = path.join(uploadsDir, 'products');
 
-// Create directories if they don't exist
-[uploadsDir, invoicesDir, barcodesDir, productsDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-    console.log(`📁 Created directory: ${dir}`);
-  }
-});
+// Create directories if they don't exist (only attempt in non-Vercel or if /tmp is writable)
+try {
+  [uploadsDir, invoicesDir, barcodesDir, productsDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      console.log(`📁 Created directory: ${dir}`);
+    }
+  });
+} catch (error) {
+  console.log(`⚠️ Cannot create directories: ${error.message}`);
+  console.log('📁 File uploads will need cloud storage in production');
+}
 
-app.use('/uploads', express.static(uploadsDir));
+// Only serve static files if directory exists and we're not on Vercel
+if (!isVercel && fs.existsSync(uploadsDir)) {
+  app.use('/uploads', express.static(uploadsDir));
+} else {
+  // Mock uploads endpoint for Vercel
+  app.get('/uploads/*', (req, res) => {
+    res.status(404).json({ error: 'File uploads not available in serverless mode' });
+  });
+}
 
 // Request logging in development
 if (process.env.NODE_ENV === 'development') {
@@ -135,12 +158,6 @@ if (process.env.NODE_ENV === 'development') {
     next();
   });
 }
-
-// Apply rate limiting to specific routes
-app.use('/api/auth', authLimiter);
-app.use('/api/sales', posLimiter);
-app.use('/api/reports/export', exportLimiter);
-app.use('/api/', apiLimiter);
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -164,9 +181,10 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     database: 'connected',
-    websocket: 'active',
-    environment: process.env.NODE_ENV || 'development',
-    version: '1.0.0'
+    websocket: !isVercel ? 'active' : 'disabled (serverless)',
+    environment: process.env.NODE_ENV || 'production',
+    version: '1.0.0',
+    vercel: isVercel
   });
 });
 
@@ -176,9 +194,8 @@ app.get('/', (req, res) => {
     name: 'Frugano Retail Management API',
     version: '1.0.0',
     description: 'Complete retail management system for fresh produce stores',
-    environment: process.env.NODE_ENV || 'development',
-    documentation: 'https://docs.frugano.com/api',
-    support: 'support@frugano.com',
+    environment: process.env.NODE_ENV || 'production',
+    vercel: isVercel,
     timestamp: new Date().toISOString(),
     endpoints: {
       public: {
@@ -191,6 +208,7 @@ app.get('/', (req, res) => {
         me: 'GET /api/auth/me (Auth)',
         logout: 'POST /api/auth/logout (Auth)',
         changePassword: 'POST /api/auth/change-password (Auth)'
+      
       },
       users: {
         list: 'GET /api/users (Owner, Manager)',
@@ -287,7 +305,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ 
     error: 'Route not found',
@@ -301,55 +318,46 @@ app.use((req, res) => {
 // Error handler
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 5000;
-
-// Start server
-httpServer.listen(PORT, () => {
-  console.log('\n' + '='.repeat(70));
-  console.log('🚀 FRUGANO RETAIL MANAGEMENT SYSTEM');
-  console.log('='.repeat(70));
-  console.log(`📍 Server:     http://localhost:${PORT}`);
-  console.log(`📊 Database:   Neon PostgreSQL`);
-  console.log(`🔌 WebSocket:  Active on same port`);
-  console.log(`📁 Uploads:    ${uploadsDir}`);
-  console.log(`   ├─ Invoices: ${invoicesDir}`);
-  console.log(`   ├─ Barcodes: ${barcodesDir}`);
-  console.log(`   └─ Products: ${productsDir}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`⏰ Started:    ${new Date().toLocaleString()}`);
-  console.log('='.repeat(70));
-  console.log('\n📋 Available Endpoints:');
-  console.log(`   • Health:    GET  http://localhost:${PORT}/health`);
-  console.log(`   • API Docs:  GET  http://localhost:${PORT}/`);
-  console.log(`   • Auth:      POST http://localhost:${PORT}/api/auth/login`);
-  console.log(`   • Setup:     POST http://localhost:${PORT}/api/auth/setup`);
-  console.log('\n💡 Tip: Run "node test-complete.js" to test all endpoints\n');
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('\n🛑 SIGTERM received: closing server...');
-  httpServer.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
+// For local development
+if (!isVercel) {
+  const PORT = process.env.PORT || 5000;
+  httpServer.listen(PORT, () => {
+    console.log('\n' + '='.repeat(70));
+    console.log('🚀 FRUGANO RETAIL MANAGEMENT SYSTEM');
+    console.log('='.repeat(70));
+    console.log(`📍 Server:     http://localhost:${PORT}`);
+    console.log(`📊 Database:   Neon PostgreSQL`);
+    console.log(`🔌 WebSocket:  Active on same port`);
+    console.log(`📁 Uploads:    ${uploadsDir}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log('='.repeat(70) + '\n');
   });
+}
+
+// Graceful shutdown (only for local)
+process.on('SIGTERM', () => {
+  if (!isVercel) {
+    console.log('\n🛑 SIGTERM received: closing server...');
+    httpServer.close(() => {
+      console.log('✅ Server closed');
+      process.exit(0);
+    });
+  }
 });
 
 process.on('SIGINT', () => {
-  console.log('\n🛑 SIGINT received: closing server...');
-  httpServer.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
+  if (!isVercel) {
+    console.log('\n🛑 SIGINT received: closing server...');
+    httpServer.close(() => {
+      console.log('✅ Server closed');
+      process.exit(0);
+    });
+  }
 });
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
-  // Gracefully shutdown
-  httpServer.close(() => {
-    process.exit(1);
-  });
 });
 
 // Handle unhandled promise rejections
@@ -357,4 +365,5 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
+// Export for Vercel serverless
 module.exports = app;
