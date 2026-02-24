@@ -21,6 +21,7 @@ const dashboardRoutes = require('../src/routes/dashboard.routes');
 const campaignRoutes = require('../src/routes/campaign.routes');
 const reportRoutes = require('../src/routes/report.routes');
 const hardwareRoutes = require('../src/routes/hardware.routes');
+const upiRoutes = require('../src/routes/upi.routes'); // ✅ NEW: UPI Routes
 
 // Import middleware
 const { errorHandler } = require('../src/middleware/errorHandler');
@@ -28,12 +29,31 @@ const { authenticate } = require('../src/middleware/auth');
 
 const app = express();
 
-// CORS configuration
+// CORS configuration for production
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000',
+  'https://frugano-frontend.vercel.app',
+  'https://frugano-admin.vercel.app',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
 const corsOptions = {
-  origin: process.env.FRONTEND_URL || 'https://frugano-frontend.vercel.app',
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('❌ Blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 };
 
 app.use(helmet());
@@ -43,8 +63,17 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ============================================
-// DEBUG ENDPOINTS - Add these FIRST
+// HEALTH CHECK ENDPOINTS (Public)
 // ============================================
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'production',
+    uptime: process.uptime()
+  });
+});
+
 app.get('/api/test', (req, res) => {
   res.json({ 
     message: 'API is working!', 
@@ -57,62 +86,15 @@ app.get('/api/ping', (req, res) => {
   res.json({ message: 'pong', time: new Date().toISOString() });
 });
 
-app.get('/api/debug-routes', (req, res) => {
-  const routes = [];
-  
-  // Collect all registered routes
-  app._router.stack.forEach(middleware => {
-    if (middleware.route) {
-      routes.push({
-        path: middleware.route.path,
-        methods: Object.keys(middleware.route.methods)
-      });
-    } else if (middleware.name === 'router' && middleware.handle.stack) {
-      middleware.handle.stack.forEach(handler => {
-        if (handler.route) {
-          routes.push({
-            path: handler.route.path,
-            methods: Object.keys(handler.route.methods)
-          });
-        }
-      });
-    }
-  });
-  
-  res.json({
-    message: 'Registered Routes',
-    count: routes.length,
-    routes: routes,
-    env: process.env.NODE_ENV
-  });
-});
-
-app.get('/api/db-test', async (req, res) => {
-  try {
-    const { PrismaClient } = require('@prisma/client');
-    const prisma = new PrismaClient();
-    const userCount = await prisma.user.count();
-    await prisma.$disconnect();
-    res.json({ 
-      success: true, 
-      message: 'Database connected',
-      userCount,
-      databaseUrl: process.env.DATABASE_URL ? 'Set' : 'NOT SET'
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  }
-});
-
 // ============================================
 // API ROUTES
 // ============================================
 console.log('📦 Mounting API routes...');
 
+// Public routes (no authentication required)
 app.use('/api/auth', authRoutes);
+
+// Protected routes (authentication required)
 app.use('/api/users', authenticate, userRoutes);
 app.use('/api/categories', authenticate, categoryRoutes);
 app.use('/api/products', authenticate, productRoutes);
@@ -125,30 +107,49 @@ app.use('/api/dashboard', authenticate, dashboardRoutes);
 app.use('/api/campaigns', authenticate, campaignRoutes);
 app.use('/api/reports', authenticate, reportRoutes);
 app.use('/api/hardware', authenticate, hardwareRoutes);
+app.use('/api/upi', authenticate, upiRoutes); // ✅ NEW: UPI Routes (protected)
 
 console.log('✅ API routes mounted');
-
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'production'
-  });
-});
 
 // Root route
 app.get('/', (req, res) => {
   res.json({
     name: 'Frugano API',
     version: '1.0.0',
-    status: 'running'
+    status: 'running',
+    environment: process.env.NODE_ENV || 'production',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      public: {
+        health: '/health',
+        test: '/api/test',
+        ping: '/api/ping'
+      },
+      auth: {
+        login: '/api/auth/login (POST)',
+        setup: '/api/auth/setup (POST)',
+        me: '/api/auth/me (GET)'
+      },
+      upi: {
+        generateAmount: '/api/upi/generate-amount (POST)',
+        generateSale: '/api/upi/generate/:saleId (POST)',
+        download: '/api/upi/download/:orderId (GET)',
+        verify: '/api/upi/verify (POST)'
+      }
+      // ... other endpoints
+    }
   });
 });
 
 // 404 handler - MUST BE LAST
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.path,
+    method: req.method,
+    message: `Cannot ${req.method} ${req.path}`,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Error handler
