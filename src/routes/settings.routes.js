@@ -15,7 +15,7 @@ let storeSettings = {
   country: 'India',
   currency: 'INR',
   timezone: 'Asia/Kolkata',
-  taxRate: 5,
+  taxRate: 5, // Default 5%
   deliveryFee: 40,
   freeDeliveryMin: 500,
   loyaltyPointsRate: 1,
@@ -33,6 +33,7 @@ let storeSettings = {
 
 // Get store settings
 router.get('/store', authenticate, (req, res) => {
+  console.log('📤 Sending store settings:', storeSettings);
   res.json({
     success: true,
     data: storeSettings
@@ -44,44 +45,51 @@ router.put('/store', authenticate, authorize('OWNER', 'MANAGER'), (req, res) => 
   try {
     const updates = req.body;
     
+    console.log('📥 Received settings update:', updates);
+
     // Validate required fields
     if (!updates.storeName) {
       return res.status(400).json({ error: 'Store name is required' });
     }
 
-    // Validate and parse numeric fields
+    // Parse numeric fields carefully, especially taxRate
     const parsedUpdates = {
-      ...updates,
+      storeName: updates.storeName || storeSettings.storeName,
+      phone: updates.phone || storeSettings.phone,
+      email: updates.email || storeSettings.email,
+      gstNumber: updates.gstNumber || storeSettings.gstNumber,
+      address: updates.address || storeSettings.address,
+      city: updates.city || storeSettings.city,
+      state: updates.state || storeSettings.state,
+      pincode: updates.pincode || storeSettings.pincode,
+      country: updates.country || storeSettings.country,
+      currency: updates.currency || storeSettings.currency,
+      timezone: updates.timezone || storeSettings.timezone,
+      
+      // CRITICAL: Tax rate must be parsed correctly, even when 0
       taxRate: updates.taxRate !== undefined ? parseFloat(updates.taxRate) : storeSettings.taxRate,
+      
       deliveryFee: updates.deliveryFee !== undefined ? parseFloat(updates.deliveryFee) : storeSettings.deliveryFee,
       freeDeliveryMin: updates.freeDeliveryMin !== undefined ? parseFloat(updates.freeDeliveryMin) : storeSettings.freeDeliveryMin,
       loyaltyPointsRate: updates.loyaltyPointsRate !== undefined ? parseInt(updates.loyaltyPointsRate) : storeSettings.loyaltyPointsRate,
+      openingTime: updates.openingTime || storeSettings.openingTime,
+      closingTime: updates.closingTime || storeSettings.closingTime,
+      invoicePrefix: updates.invoicePrefix || storeSettings.invoicePrefix,
       invoiceStartNumber: updates.invoiceStartNumber !== undefined ? parseInt(updates.invoiceStartNumber) : storeSettings.invoiceStartNumber,
+      invoiceFooter: updates.invoiceFooter || storeSettings.invoiceFooter,
       autoPrintInvoice: updates.autoPrintInvoice !== undefined ? Boolean(updates.autoPrintInvoice) : storeSettings.autoPrintInvoice,
       emailInvoice: updates.emailInvoice !== undefined ? Boolean(updates.emailInvoice) : storeSettings.emailInvoice,
       autoBackup: updates.autoBackup !== undefined ? Boolean(updates.autoBackup) : storeSettings.autoBackup,
+      backupFrequency: updates.backupFrequency || storeSettings.backupFrequency,
+      backupTime: updates.backupTime || storeSettings.backupTime,
     };
 
-    // Validate numeric ranges
-    if (parsedUpdates.taxRate < 0 || parsedUpdates.taxRate > 100) {
+    // Validate tax rate (allow 0)
+    if (isNaN(parsedUpdates.taxRate) || parsedUpdates.taxRate < 0 || parsedUpdates.taxRate > 100) {
       return res.status(400).json({ error: 'Tax rate must be between 0 and 100' });
     }
 
-    if (parsedUpdates.deliveryFee < 0) {
-      return res.status(400).json({ error: 'Delivery fee cannot be negative' });
-    }
-
-    if (parsedUpdates.freeDeliveryMin < 0) {
-      return res.status(400).json({ error: 'Free delivery minimum cannot be negative' });
-    }
-
-    if (parsedUpdates.loyaltyPointsRate < 0) {
-      return res.status(400).json({ error: 'Loyalty points rate cannot be negative' });
-    }
-
-    if (parsedUpdates.invoiceStartNumber < 1) {
-      return res.status(400).json({ error: 'Invoice start number must be positive' });
-    }
+    console.log('✅ Parsed tax rate:', parsedUpdates.taxRate);
 
     // Update settings
     storeSettings = {
@@ -89,13 +97,15 @@ router.put('/store', authenticate, authorize('OWNER', 'MANAGER'), (req, res) => 
       ...parsedUpdates
     };
 
+    console.log('💾 Updated store settings. New tax rate:', storeSettings.taxRate);
+
     res.json({
       success: true,
       data: storeSettings,
       message: 'Store settings updated successfully'
     });
   } catch (error) {
-    console.error('Update settings error:', error);
+    console.error('❌ Update settings error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -103,7 +113,6 @@ router.put('/store', authenticate, authorize('OWNER', 'MANAGER'), (req, res) => 
 // Backup database
 router.get('/backup', authenticate, authorize('OWNER'), (req, res) => {
   try {
-    // In production, this would create a real database backup
     const backupData = {
       timestamp: new Date().toISOString(),
       settings: storeSettings,
@@ -112,7 +121,6 @@ router.get('/backup', authenticate, authorize('OWNER'), (req, res) => {
       message: 'Database backup'
     };
 
-    // Set headers for file download
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename=frugano-backup-${new Date().toISOString().split('T')[0]}.json`);
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
@@ -133,12 +141,10 @@ router.post('/restore', authenticate, authorize('OWNER'), (req, res) => {
       return res.status(400).json({ error: 'No backup data provided' });
     }
 
-    // Validate backup data structure
     if (!backupData.settings || !backupData.timestamp) {
       return res.status(400).json({ error: 'Invalid backup file format' });
     }
     
-    // In production, this would restore from backup
     storeSettings = { 
       ...storeSettings, 
       ...backupData.settings 
@@ -155,7 +161,7 @@ router.post('/restore', authenticate, authorize('OWNER'), (req, res) => {
   }
 });
 
-// Reset to defaults (admin only)
+// Reset to defaults
 router.post('/reset', authenticate, authorize('OWNER'), (req, res) => {
   try {
     const defaultSettings = {
