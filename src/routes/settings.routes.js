@@ -33,7 +33,7 @@ let storeSettings = {
 
 // Get store settings
 router.get('/store', authenticate, (req, res) => {
-  console.log('📤 Sending store settings:', storeSettings);
+  console.log('📤 Sending store settings. Tax rate:', storeSettings.taxRate);
   res.json({
     success: true,
     data: storeSettings
@@ -45,14 +45,33 @@ router.put('/store', authenticate, authorize('OWNER', 'MANAGER'), (req, res) => 
   try {
     const updates = req.body;
     
-    console.log('📥 Received settings update:', updates);
+    console.log('📥 Received settings update. Tax rate from request:', updates.taxRate);
 
     // Validate required fields
     if (!updates.storeName) {
       return res.status(400).json({ error: 'Store name is required' });
     }
 
-    // Parse numeric fields carefully, especially taxRate
+    // CRITICAL FIX: Ensure tax rate is properly parsed as a number
+    let parsedTaxRate = storeSettings.taxRate; // Default to current value
+    
+    if (updates.taxRate !== undefined) {
+      // Convert to number and handle edge cases
+      parsedTaxRate = parseFloat(updates.taxRate);
+      
+      // Check if it's a valid number
+      if (isNaN(parsedTaxRate)) {
+        parsedTaxRate = 0; // Default to 0 if invalid
+      }
+      
+      // Ensure it's within range
+      if (parsedTaxRate < 0) parsedTaxRate = 0;
+      if (parsedTaxRate > 100) parsedTaxRate = 100;
+    }
+
+    console.log('✅ Parsed tax rate:', parsedTaxRate);
+
+    // Parse other fields
     const parsedUpdates = {
       storeName: updates.storeName || storeSettings.storeName,
       phone: updates.phone || storeSettings.phone,
@@ -66,8 +85,8 @@ router.put('/store', authenticate, authorize('OWNER', 'MANAGER'), (req, res) => 
       currency: updates.currency || storeSettings.currency,
       timezone: updates.timezone || storeSettings.timezone,
       
-      // CRITICAL: Tax rate must be parsed correctly, even when 0
-      taxRate: updates.taxRate !== undefined ? parseFloat(updates.taxRate) : storeSettings.taxRate,
+      // Use the parsed tax rate
+      taxRate: parsedTaxRate,
       
       deliveryFee: updates.deliveryFee !== undefined ? parseFloat(updates.deliveryFee) : storeSettings.deliveryFee,
       freeDeliveryMin: updates.freeDeliveryMin !== undefined ? parseFloat(updates.freeDeliveryMin) : storeSettings.freeDeliveryMin,
@@ -84,12 +103,10 @@ router.put('/store', authenticate, authorize('OWNER', 'MANAGER'), (req, res) => 
       backupTime: updates.backupTime || storeSettings.backupTime,
     };
 
-    // Validate tax rate (allow 0)
-    if (isNaN(parsedUpdates.taxRate) || parsedUpdates.taxRate < 0 || parsedUpdates.taxRate > 100) {
+    // Validate ranges
+    if (parsedUpdates.taxRate < 0 || parsedUpdates.taxRate > 100) {
       return res.status(400).json({ error: 'Tax rate must be between 0 and 100' });
     }
-
-    console.log('✅ Parsed tax rate:', parsedUpdates.taxRate);
 
     // Update settings
     storeSettings = {
@@ -108,6 +125,18 @@ router.put('/store', authenticate, authorize('OWNER', 'MANAGER'), (req, res) => 
     console.error('❌ Update settings error:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Debug endpoint to check tax rate
+router.get('/debug-tax', authenticate, (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      taxRate: storeSettings.taxRate,
+      taxRateType: typeof storeSettings.taxRate,
+      allSettings: storeSettings
+    }
+  });
 });
 
 // Backup database
