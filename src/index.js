@@ -292,8 +292,8 @@ app.use('/api/auth', authRoutes);
 
 // Protected routes (authentication required)
 app.use('/api/users', authenticate, userRoutes);
-app.use('/api/categories', authenticate, categoryRoutes);
-app.use('/api/products', authenticate, productRoutes);
+app.use('/api/categories',  categoryRoutes);
+app.use('/api/products',  productRoutes);
 app.use('/api/sales', authenticate, saleRoutes);
 app.use('/api/purchases', authenticate, purchaseRoutes);
 app.use('/api/suppliers', authenticate, supplierRoutes);
